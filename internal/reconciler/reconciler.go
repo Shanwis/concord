@@ -26,6 +26,7 @@ import (
 	"github.com/opencontainers/runc/libcontainer"
 	"go.uber.org/zap"
 
+	"github.com/podomy/concord/internal/clock"
 	"github.com/podomy/concord/internal/cn"
 	"github.com/podomy/concord/internal/cr"
 	"github.com/podomy/concord/internal/journal"
@@ -215,7 +216,7 @@ func reconcileWorkloadSpec(
 		if !shouldRestartWorkload(spec.Restart, *entry.ExitStatus) {
 			return // Restart policy dictates no restart; retain exited status entry.
 		}
-		if entry.restartAfter.After(time.Now()) {
+		if entry.restartAfter.After(clock.Now()) {
 			// We are still cooling down, can't restart now.
 			return
 		}
@@ -479,7 +480,7 @@ func handleExitEvent(
 
 	entry.ExitStatus = &status
 	entry.restartCount++
-	entry.restartAfter = time.Now().Add(backOff(entry.restartCount))
+	entry.restartAfter = clock.Now().Add(backOff(entry.restartCount))
 
 	recordInstanceEvent(ctx, logger, j, entry.Spec, nodeID, workload.StateStopped, 0)
 	peerService.SetWorkloadCount(countRunning(running))

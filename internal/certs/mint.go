@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/podomy/concord/internal/clock"
 )
 
 // MintNode loads the CA from the default paths and writes a new node.crt and
@@ -73,8 +75,8 @@ func createNode(nodeID uuid.UUID, caCert *x509.Certificate, caKey *rsa.PrivateKe
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "Concord Node: " + nodeID.String()},
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+		NotBefore:    clock.Now().Add(-time.Minute),
+		NotAfter:     clock.Now().Add(365 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		DNSNames:     []string{nodeID.String(), "localhost"},

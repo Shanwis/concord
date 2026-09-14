@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/podomy/concord/internal/clock"
 )
 
 type Event struct {
@@ -25,7 +27,7 @@ func NewEvent(nodeID uuid.UUID, eventType string, payload json.RawMessage) Event
 		ID:        uuid.New(),
 		Type:      eventType,
 		NodeID:    nodeID,
-		Timestamp: time.Now().UTC(),
+		Timestamp: clock.Now().UTC(),
 		Payload:   payload,
 	}
 }

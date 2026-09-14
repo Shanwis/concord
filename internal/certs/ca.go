@@ -13,6 +13,8 @@ import (
 	"math/big"
 	"os"
 	"time"
+
+	"github.com/podomy/concord/internal/clock"
 )
 
 // WriteCA creates a new self-signed CA and writes ca.crt and ca.key to the
@@ -87,8 +89,8 @@ func createCA() (caDER []byte, caCert *x509.Certificate, caKey *rsa.PrivateKey, 
 	template := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "Concord CA"},
-		NotBefore:             time.Now().Add(-time.Minute),
-		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
+		NotBefore:             clock.Now().Add(-time.Minute),
+		NotAfter:              clock.Now().Add(10 * 365 * 24 * time.Hour),
 		IsCA:                  true,
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,

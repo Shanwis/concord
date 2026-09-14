@@ -11,6 +11,8 @@ import (
 	"os"
 
 	"github.com/google/uuid"
+
+	"github.com/podomy/concord/internal/clock"
 )
 
 // Ensure returns the default TLS material paths for transport.
@@ -107,7 +109,7 @@ func valid(paths Paths) error {
 	if err != nil {
 		return fmt.Errorf("parse node cert: %w", err)
 	}
-	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool}); err != nil {
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, CurrentTime: clock.Now()}); err != nil {
 		return fmt.Errorf("node cert verify: %w", err)
 	}
 	return nil

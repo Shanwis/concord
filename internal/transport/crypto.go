@@ -8,6 +8,8 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
+
+	"github.com/podomy/concord/internal/clock"
 )
 
 // loadTLSConfig loads this node's cert/key and the CA trust pool for the HTTPS server.
@@ -24,6 +26,7 @@ func loadTLSConfig(caFile, certFile, keyFile string) (*tls.Config, error) {
 		ClientCAs:    pool,
 		RootCAs:      pool,
 		Certificates: []tls.Certificate{cert},
+		Time:         clock.Now,
 	}, nil
 }
 
@@ -48,6 +51,7 @@ func loadClientTLSConfig(caFile, certFile, keyFile string) (*tls.Config, error) 
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			return verifyPeerCertAgainstPool(cs.PeerCertificates, pool)
 		},
+		Time: clock.Now,
 	}, nil
 }
 
@@ -82,6 +86,7 @@ func verifyPeerCertAgainstPool(peerCerts []*x509.Certificate, roots *x509.CertPo
 		Roots:         roots,
 		Intermediates: intermediates,
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		CurrentTime:   clock.Now(),
 	}
 	if _, err := leaf.Verify(opts); err != nil {
 		return fmt.Errorf("peer certificate verify: %w", err)
