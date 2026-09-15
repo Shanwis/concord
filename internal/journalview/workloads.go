@@ -4,6 +4,7 @@
 package journalview
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,9 +26,12 @@ import (
 // 3. A stored tombstone (Removed=true) is never replaced
 // by a live spec. A stop wins over any spec copy,
 // regardless of arrival order.
-// 4. Removed=true remains stored as a tombstone.
-// 5. Rebuild replays the journal in order and produces the same final state.
-// 6. Malformed workload.spec payloads return an error.
+// 4. Two live specs for one ID resolve deterministically:
+// the byte-larger serialization wins, regardless of
+// arrival order.
+// 5. Removed=true remains stored as a tombstone.
+// 6. Rebuild replays the journal in order and produces the same final state.
+// 7. Malformed workload.spec payloads return an error.
 
 const bucketNameWorkloads = "workloads"
 
@@ -75,7 +79,18 @@ func (e *Workloads) putEvent(b *bolt.Bucket, event journal.Event) error {
 			return fmt.Errorf("unmarshal: %w", err)
 		}
 
+		// Tombstone prevails. A stop cannot be reverted
+		// by a later spec copy.
 		if storedSpec.Removed && !spec.Removed {
+			return nil
+		}
+
+		// Live specs resolve deterministically: the byte-larger
+		// serialization wins, so arrival order does not matter.
+		// Why byte comparison and not something meaningful?
+		// Nothing meaningful exists, two concurrent assignments have
+		// no "right" winner, only a deterministic one.
+		if !storedSpec.Removed && !spec.Removed && bytes.Compare(serializedSpec, stored) < 0 {
 			return nil
 		}
 	}
