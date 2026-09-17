@@ -6,13 +6,12 @@ package certs
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"net/netip"
 	"os"
 
 	"github.com/google/uuid"
-
-	"github.com/podomy/concord/internal/clock"
 )
 
 // Ensure returns the default TLS material paths for transport.
@@ -105,12 +104,31 @@ func valid(paths Paths) error {
 		return fmt.Errorf("ca: no certificates") //nolint:perfsprint // plain error, no wrap target
 	}
 
+	// Decode caPEM block.
+	block, _ := pem.Decode(caPEM)
+	if block == nil {
+		return fmt.Errorf("ca: no cert block found") //nolint:perfsprint // plain sentinel, no wrap target
+	}
+
+	if block.Type != "CERTIFICATE" {
+		return fmt.Errorf("ca: provided ca is not a certificate") //nolint:perfsprint // plain sentinel, no wrap target
+	}
+
+	// Parse the decoded caPEM into an *x509.Certificate
+	ca, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse ca: %w", err)
+	}
+
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
 		return fmt.Errorf("parse node cert: %w", err)
 	}
-	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, CurrentTime: clock.Now()}); err != nil {
-		return fmt.Errorf("node cert verify: %w", err)
+
+	err = VerifyNodeCert(leaf, ca)
+	if err != nil {
+		return err
 	}
+
 	return nil
 }

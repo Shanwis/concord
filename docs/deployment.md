@@ -88,7 +88,7 @@ When Concord starts:
 2. It automatically generates a unique node identity (`UUID`) and mints a local `node.crt` and `node.key` signed by the shared CA.
 3. If pre-minted `node.crt` and `node.key` already exist alongside `ca.crt`, it reuses them directly.
 
-Because every node is signed by the same Root CA, all nodes can mutually verify each other's identity across the mesh.
+Because every node is signed by the same Root CA, all nodes can mutually verify each other's identity across the mesh. Verification is by CA signature and node usages only; certificate validity windows are not enforced, so nodes need no wall-clock agreement.
 
 ---
 

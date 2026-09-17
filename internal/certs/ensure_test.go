@@ -4,13 +4,18 @@
 package certs_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"net"
 	"net/netip"
 	"os"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -138,6 +143,89 @@ func setupCA(t *testing.T) {
 	if err := certs.WriteCA(); err != nil {
 		t.Fatalf("write ca: %v", err)
 	}
+}
+
+func TestVerifyNodeCertIgnoresFutureNotBefore(t *testing.T) {
+	ca, caKey := testCACert(t)
+	leaf := testLeafCert(t, ca, caKey, time.Now().Add(24*time.Hour), time.Now().Add(48*time.Hour))
+	if err := certs.VerifyNodeCert(leaf, ca); err != nil {
+		t.Fatalf("future leaf verify: %v", err)
+	}
+}
+
+func TestVerifyNodeCertIgnoresPastNotAfter(t *testing.T) {
+	ca, caKey := testCACert(t)
+	leaf := testLeafCert(t, ca, caKey, time.Now().Add(-48*time.Hour), time.Now().Add(-24*time.Hour))
+	if err := certs.VerifyNodeCert(leaf, ca); err != nil {
+		t.Fatalf("expired leaf verify: %v", err)
+	}
+}
+
+func TestVerifyNodeCertRejectsWrongCA(t *testing.T) {
+	ca, _ := testCACert(t)
+	otherCA, otherKey := testCACert(t)
+	leaf := testLeafCert(t, otherCA, otherKey, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err := certs.VerifyNodeCert(leaf, ca); err == nil {
+		t.Fatal("expected error for leaf from another CA")
+	}
+}
+
+func TestVerifyNodeCertRejectsCAAsLeaf(t *testing.T) {
+	ca, _ := testCACert(t)
+	if err := certs.VerifyNodeCert(ca, ca); err == nil {
+		t.Fatal("expected error for CA cert as leaf")
+	}
+}
+
+func testCACert(t *testing.T) (*x509.Certificate, *rsa.PrivateKey) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate ca key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create ca: %v", err)
+	}
+	ca, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse ca: %v", err)
+	}
+	return ca, key
+}
+
+func testLeafCert(t *testing.T, ca *x509.Certificate, caKey *rsa.PrivateKey, notBefore, notAfter time.Time) *x509.Certificate {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate leaf key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "test node"},
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, ca, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create leaf: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse leaf: %v", err)
+	}
+	return leaf
 }
 
 func loadLeaf(t *testing.T, paths certs.Paths) *x509.Certificate {
