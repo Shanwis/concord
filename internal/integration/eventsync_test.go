@@ -187,13 +187,37 @@ func initViews(t *testing.T, kv *kvstore.KVStore, journalPath string) (*journalv
 	return eventsByID, views
 }
 
+// testGossipKeyValue is the fixed cluster-wide secret shared by all test
+// nodes, mirroring one operator-provisioned key per test cluster.
+var testGossipKeyValue = []byte("0123456789abcdef0123456789abcdef")
+
 func startMemberlist(t *testing.T, logger *zap.Logger, id uuid.UUID, bind netip.AddrPort, join []netip.AddrPort) *peerdiscovery.MemberService {
 	t.Helper()
+	provisionGossipKey(t)
 	ms, err := peerdiscovery.Start(logger, peerdiscovery.Node{ID: id, Address: bind}, join, netip.Addr{})
 	if err != nil {
 		t.Fatalf("memberlist start: %v", err)
 	}
 	return ms
+}
+
+// provisionGossipKey writes the fixed cluster-wide test secret into the
+// current XDG config dir, mirroring one operator-provisioned key shared by
+// every node in the test cluster.
+func provisionGossipKey(t *testing.T) {
+	t.Helper()
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("user config dir: %v", err)
+	}
+	keyDir := filepath.Join(dir, "concord", "memberservice")
+	if err := os.MkdirAll(keyDir, 0o700); err != nil {
+		t.Fatalf("create key dir: %v", err)
+	}
+	// #nosec G703 - test helper with trusted temp dir paths.
+	if err := os.WriteFile(filepath.Join(keyDir, "secret.key"), testGossipKeyValue, 0o600); err != nil {
+		t.Fatalf("write gossip key: %v", err)
+	}
 }
 
 func shutDown(t *testing.T, ms *peerdiscovery.MemberService) {

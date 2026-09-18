@@ -4,11 +4,15 @@
 package peerdiscovery
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 
@@ -115,6 +119,21 @@ func Start(
 	config.BindAddr = node.Address.Addr().String()
 	config.BindPort = int(node.Address.Port())
 
+	// Gossip encryption uses a provisioned cluster-wide secret, identical
+	// on every node. Both verify flags enforce encrypted-only gossip in
+	// their direction.
+	gossipKey, err := loadGossipKey()
+	if err != nil {
+		return nil, fmt.Errorf("load gossip key: %w", err)
+	}
+	config.SecretKey = gossipKey
+	config.GossipVerifyIncoming = true
+	config.GossipVerifyOutgoing = true
+	if logger != nil {
+		sum := sha256.Sum256(gossipKey)
+		logger.Info("gossip key loaded", zap.String("sha256", hex.EncodeToString(sum[:])))
+	}
+
 	resolved := ResolveAdvertise(node.Address, advertise)
 	if resolved.IsValid() {
 		config.AdvertiseAddr = resolved.Addr().String()
@@ -190,6 +209,29 @@ func Start(
 	}
 
 	return &memberService, nil
+}
+
+// loadGossipKey reads the provisioned cluster-wide gossip encryption key.
+// The key file must hold 16, 24, or 32 raw bytes (AES-128/192/256) and be
+// identical on every node; it is never generated here.
+func loadGossipKey() ([]byte, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return nil, fmt.Errorf("user config dir: %w", err)
+	}
+
+	keyPath := filepath.Join(dir, "concord", "memberservice", "secret.key")
+	// #nosec G304: path is local runtime configuration, not user-controlled input.
+	key, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read gossip key %s: %w", keyPath, err)
+	}
+
+	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
+		return nil, fmt.Errorf("invalid gossip key length: got %d bytes, want 16, 24, or 32", len(key))
+	}
+
+	return key, nil
 }
 
 // SetWorkloadCount updates the count of active local

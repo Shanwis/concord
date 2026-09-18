@@ -7,6 +7,8 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -17,6 +19,31 @@ import (
 	"github.com/podomy/concord/internal/dnsserver"
 	"github.com/podomy/concord/internal/peerdiscovery"
 )
+
+// testGossipKeyValue is the fixed cluster-wide secret shared by all test
+// nodes, mirroring one operator-provisioned key per test cluster.
+var testGossipKeyValue = []byte("0123456789abcdef0123456789abcdef")
+
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "concord-test")
+	if err != nil {
+		panic(err)
+	}
+	keyDir := filepath.Join(dir, "concord", "memberservice")
+	if err := os.MkdirAll(keyDir, 0o700); err != nil {
+		panic(err)
+	}
+	// #nosec G703 - test setup with trusted temp dir path.
+	if err := os.WriteFile(filepath.Join(keyDir, "secret.key"), testGossipKeyValue, 0o600); err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("XDG_CONFIG_HOME", dir); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir) //nolint:errcheck // best-effort temp cleanup in test
+	os.Exit(code)
+}
 
 func TestTwoNodesJoin(t *testing.T) {
 	t.Parallel()

@@ -90,6 +90,20 @@ When Concord starts:
 
 Because every node is signed by the same Root CA, all nodes can mutually verify each other's identity across the mesh. Verification is by CA signature and node usages only; certificate validity windows are not enforced, so nodes need no wall-clock agreement.
 
+## Gossip Encryption Key Provisioning
+
+Memberlist gossip is AES-GCM encrypted with a cluster-wide pre-shared key. **Every node must hold the exact same key bytes.** Generate once per cluster and distribute alongside the CA files:
+
+```bash
+# Generate ONCE per cluster, then copy the same file to EVERY node:
+openssl rand 32 > gossip.key
+mkdir -p ~/.config/concord/memberservice
+cp /path/to/shared/gossip.key ~/.config/concord/memberservice/secret.key
+chmod 600 ~/.config/concord/memberservice/secret.key
+```
+
+The file must hold 16, 24, or 32 raw bytes (AES-128/192/256); Concord refuses to start otherwise. A mismatched key is indistinguishable from a network partition at the gossip layer, so on split-brain symptoms compare the `sha256` fingerprint each node logs at startup (`gossip key loaded`).
+
 ---
 
 ## Multi-Node Cluster Discovery
