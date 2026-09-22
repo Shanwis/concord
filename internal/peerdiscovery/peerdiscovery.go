@@ -50,6 +50,24 @@ type NodeMetadata struct {
 	CPUMHz             float64 `json:"cpu_mhz"`
 	MemoryMB           uint64  `json:"memory_mb"`
 	Workloads          int     `json:"workload_count"`
+	// NoisePublicKey is this node's Noise static public key (32 raw bytes,
+	// base64 in JSON). Dialers use it as the IK handshake's pre-known peer
+	// key, so no dial path needs a key the gossip layer did not provide.
+	// The CA signature over the parcel travels inside the handshake, not
+	// here: at 256 bytes it would blow memberlist's 512-byte metadata limit.
+	NoisePublicKey []byte `json:"noise_public_key,omitempty"`
+	// NoiseGeneration is the rotation counter of NoisePublicKey. Highest
+	// generation seen for a node wins.
+	NoiseGeneration uint64 `json:"noise_generation,omitempty"`
+}
+
+// NoiseIdentity is this node's Noise identity for gossip: the static public
+// key, its rotation generation, and the CA signature binding all three to the
+// node ID. The private half never leaves disk; see transport.EnsureStaticKey.
+type NoiseIdentity struct {
+	Pub        []byte
+	Signature  []byte
+	Generation uint64
 }
 
 // Resolver discovers candidate peer addresses for

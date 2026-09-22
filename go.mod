@@ -4,6 +4,7 @@ go 1.26.3
 
 require (
 	github.com/coreos/go-iptables v0.8.0
+	github.com/flynn/noise v1.1.0
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-containerregistry v0.21.7
 	github.com/google/uuid v1.6.0

@@ -34,7 +34,7 @@ type MemberSource interface {
 // RunPullLoop is the peer journal reconciliation loop.
 //
 // It does not push our events. Each tick it discovers who is alive via
-// memberlist and pulls a page of their journal over HTTPS mTLS:
+// memberlist and pulls a page of their journal over the Noise transport:
 //
 //   - On meet: peer is newly seen or has become alive again → Sync once now.
 //   - Periodic: every defaultPullInterval, Sync all still-alive peers
@@ -193,7 +193,16 @@ func syncOne(
 		Limit:     defaultSyncLimit,
 	}
 
-	res, err := state.syncer.Sync(ctx, addr, req)
+	peer, ok := noisePeer(member)
+	if !ok {
+		logger.Warn("peer sync skipped: no advertised noise key",
+			zap.String("peer_id", member.ID.String()),
+			zap.String("addr", addr.String()),
+		)
+		return false
+	}
+
+	res, err := state.syncer.Sync(ctx, addr, peer, req)
 	if err != nil {
 		logger.Warn("peer sync failed",
 			zap.String("peer_id", member.ID.String()),
@@ -225,6 +234,20 @@ func syncOne(
 		zap.String("next_watermark", res.NextWatermark),
 	)
 	return true
+}
+
+// noisePeer converts a member's gossiped Noise identity into the transport
+// expectation. Peers that have not advertised a static key yet (empty Pub, for
+// example pre-upgrade nodes) are skipped by the caller.
+func noisePeer(member peerdiscovery.Node) (transport.Peer, bool) {
+	if len(member.Metadata.NoisePublicKey) == 0 {
+		return transport.Peer{}, false
+	}
+
+	return transport.Peer{
+		ID:  member.ID,
+		Pub: member.Metadata.NoisePublicKey,
+	}, true
 }
 
 // parseTransportPort parses transport.Port; invalid or zero falls back to 8443.

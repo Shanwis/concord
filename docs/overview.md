@@ -19,7 +19,7 @@ Traditional distributed systems freeze or fail when machines lose network access
 
 * **Journal**: An append-only log of immutable events (`workload.spec`, `workload.tombstone`, `node.started`).
 * **Workloads**: Declarative specifications defining execution parameters, environment, ports, and health checks.
-* **Mesh**: Automatic WireGuard tunnels connecting nodes with mutual TLS authentication.
+* **Mesh**: Automatic WireGuard tunnels between nodes, with mutual Noise authentication on the sync transport.
 
 ---
 

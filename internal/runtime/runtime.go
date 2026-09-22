@@ -18,6 +18,7 @@ import (
 	"github.com/podomy/concord/internal/cr"
 	"github.com/podomy/concord/internal/dnsserver"
 	"github.com/podomy/concord/internal/ipc"
+	"github.com/podomy/concord/internal/journal"
 	"github.com/podomy/concord/internal/journalview"
 	"github.com/podomy/concord/internal/kvstore"
 	"github.com/podomy/concord/internal/node"
@@ -45,7 +46,7 @@ func Run(ctx context.Context, logger *zap.Logger) error {
 	}
 	defer closeStores(logger, st)
 
-	eventsByID, _, workloads, views, err := setupViews(
+	eventsByID, _, workloads, pinned, views, err := setupViews(
 		ctx,
 		st.kv,
 	)
@@ -67,10 +68,11 @@ func Run(ctx context.Context, logger *zap.Logger) error {
 		return fmt.Errorf("record node started: %w", err)
 	}
 
-	// Ensure WireGuard key material for overlay mesh.
-	wgKey, err := cn.EnsureWGKeys()
+	// Ensure all node key material: WireGuard for the overlay mesh, Noise
+	// static key plus CA-signed identity for the sync transport.
+	wgKey, staticKey, noiseIdentity, err := ensureNodeKeys(*nodeConfig)
 	if err != nil {
-		return fmt.Errorf("ensure wireguard keys: %w", err)
+		return err
 	}
 
 	stopMDNS, err := startMDNSAdvertise(
@@ -88,6 +90,7 @@ func Run(ctx context.Context, logger *zap.Logger) error {
 		nodeConfig,
 		nil,
 		wgKey.Public,
+		noiseIdentity,
 	)
 	if err != nil {
 		return err
@@ -119,7 +122,7 @@ func Run(ctx context.Context, logger *zap.Logger) error {
 	}
 	logger.Info("DNS server started")
 
-	client, err := startTransport(ctx, logger, *nodeConfig)
+	client, err := setupSyncTransport(ctx, logger, *nodeConfig, staticKey, noiseIdentity, st.journal, views, pinned)
 	if err != nil {
 		return err
 	}
@@ -360,52 +363,112 @@ func startTransport(
 	ctx context.Context,
 	logger *zap.Logger,
 	nodeConfig node.NodeConfig,
+	static transport.StaticKey,
+	identity peerdiscovery.NoiseIdentity,
+	verify transport.Verifier,
 ) (*transport.Client, error) {
-	// Same IP resolution memberlist uses, so node cert IP
-	// SANs match how peers dial.
-	resolved := peerdiscovery.ResolveAdvertise(
-		nodeConfig.MemberlistAddress,
-		nodeConfig.AdvertiseAddress,
-	)
-	advertise := netip.Addr{}
-	if resolved.IsValid() {
-		advertise = resolved.Addr()
-	}
+	parcel := transport.EncodeParcel(nodeConfig.ID, identity.Generation, identity.Signature)
 
-	paths, err := certs.Ensure(nodeConfig.ID, advertise)
-	if err != nil {
-		return nil, fmt.Errorf("ensure certs: %w", err)
-	}
-
-	err = transport.Start(
+	err := transport.Start(
 		ctx,
 		logger,
-		paths.CA,
-		paths.Cert,
-		paths.Key,
+		static,
+		parcel,
+		verify,
 	)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"http/2 server failed to start: %w",
+			"noise server failed to start: %w",
 			err,
 		)
 	}
 
-	client, err := transport.NewClient(
-		paths.CA,
-		paths.Cert,
-		paths.Key,
+	client := transport.NewClient(
+		static,
+		parcel,
+		verify,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("new http client: %w", err)
-	}
 
 	logger.Info(
-		"https server started",
+		"noise transport started",
 		zap.String("addr", ":"+transport.Port),
 	)
 
 	return client, nil
+}
+
+// setupSyncTransport builds the pinning verifier and starts the Noise
+// transport plus sync client.
+func setupSyncTransport(
+	ctx context.Context,
+	logger *zap.Logger,
+	nodeConfig node.NodeConfig,
+	static transport.StaticKey,
+	identity peerdiscovery.NoiseIdentity,
+	j journal.Journal,
+	views []journalview.View,
+	pinned *journalview.PinnedKeys,
+) (*transport.Client, error) {
+	// First-seen pinning wraps the CA check for both handshake directions.
+	// Pins persist in the journal, so restarts re-pin from replay.
+	verify, err := newKeyPinner(ctx, logger, nodeConfig.ID, j, views, pinned)
+	if err != nil {
+		return nil, err
+	}
+
+	return startTransport(ctx, logger, nodeConfig, static, identity, verify)
+}
+
+// ensureNodeKeys ensures every key this node needs: the WireGuard pair for
+// the overlay mesh, and the Noise static key plus its CA-signed identity for
+// the sync transport.
+func ensureNodeKeys(nodeConfig node.NodeConfig) (cn.Key, transport.StaticKey, peerdiscovery.NoiseIdentity, error) {
+	wgKey, err := cn.EnsureWGKeys()
+	if err != nil {
+		return cn.Key{}, transport.StaticKey{}, peerdiscovery.NoiseIdentity{}, fmt.Errorf("ensure wireguard keys: %w", err)
+	}
+
+	static, identity, err := prepareNoiseIdentity(nodeConfig)
+	if err != nil {
+		return cn.Key{}, transport.StaticKey{}, peerdiscovery.NoiseIdentity{}, err
+	}
+
+	return wgKey, static, identity, nil
+}
+
+// prepareNoiseIdentity ensures this node's Noise static key and rotation
+// generation, then signs the identity parcel the node gossips to peers.
+// certs.Ensure runs first so a missing CA fails with the provisioning error.
+// The node certificate it mints is unused by the Noise transport; only the CA
+// presence check matters here.
+func prepareNoiseIdentity(nodeConfig node.NodeConfig) (transport.StaticKey, peerdiscovery.NoiseIdentity, error) {
+	_, err := certs.Ensure(nodeConfig.ID, netip.Addr{})
+	if err != nil {
+		return transport.StaticKey{}, peerdiscovery.NoiseIdentity{}, fmt.Errorf("ensure certs: %w", err)
+	}
+
+	static, err := transport.EnsureStaticKey()
+	if err != nil {
+		return transport.StaticKey{}, peerdiscovery.NoiseIdentity{}, fmt.Errorf("ensure noise key: %w", err)
+	}
+
+	generation, err := transport.EnsureGenerationCounter()
+	if err != nil {
+		return transport.StaticKey{}, peerdiscovery.NoiseIdentity{}, fmt.Errorf("ensure noise generation: %w", err)
+	}
+
+	sig, err := certs.SignNodeKey(nodeConfig.ID, generation, static.Public)
+	if err != nil {
+		return transport.StaticKey{}, peerdiscovery.NoiseIdentity{}, fmt.Errorf("sign noise key: %w", err)
+	}
+
+	identity := peerdiscovery.NoiseIdentity{
+		Pub:        static.Public,
+		Signature:  sig,
+		Generation: generation,
+	}
+
+	return static, identity, nil
 }
 
 func closeStores(logger *zap.Logger, st *stores) {
@@ -451,27 +514,29 @@ func shutdownIPCServer(
 func setupViews(
 	ctx context.Context,
 	kv *kvstore.KVStore,
-) (*journalview.EventsByID, *journalview.EventsByType, *journalview.Workloads, []journalview.View, error) {
+) (*journalview.EventsByID, *journalview.EventsByType, *journalview.Workloads, *journalview.PinnedKeys, []journalview.View, error) {
 	eventsByID := journalview.NewEventsByID(kv)
 	eventsByNode := journalview.NewEventsByNode(kv)
 	eventsByType := journalview.NewEventsByType(kv)
 	workloads := journalview.NewWorkloads(kv)
+	pinned := journalview.NewPinnedKeys(kv)
 	views := []journalview.View{
 		eventsByID,
 		eventsByNode,
 		eventsByType,
 		workloads,
+		pinned,
 	}
 
 	err := journalview.RebuildViews(ctx, views)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf(
+		return nil, nil, nil, nil, nil, fmt.Errorf(
 			"rebuild views: %w",
 			err,
 		)
 	}
 
-	return eventsByID, eventsByType, workloads, views, nil
+	return eventsByID, eventsByType, workloads, pinned, views, nil
 }
 
 // runDiscoveryLoop is the active discovery path. It
@@ -694,6 +759,7 @@ func startPeerService(
 	nodeConfig *node.NodeConfig,
 	join []netip.AddrPort,
 	wgPublicKey string,
+	identity peerdiscovery.NoiseIdentity,
 ) (*peerdiscovery.MemberService, error) {
 	localNode := peerdiscovery.Node{
 		ID: nodeConfig.ID,
@@ -702,6 +768,8 @@ func startPeerService(
 		),
 		Metadata: peerdiscovery.NodeMetadata{
 			WireGuardPublicKey: wgPublicKey,
+			NoisePublicKey:     identity.Pub,
+			NoiseGeneration:    identity.Generation,
 		},
 	}
 	peerService, err := peerdiscovery.Start(
@@ -709,6 +777,7 @@ func startPeerService(
 		localNode,
 		join,
 		nodeConfig.AdvertiseAddress,
+		identity,
 	)
 	if err != nil {
 		return nil, fmt.Errorf(

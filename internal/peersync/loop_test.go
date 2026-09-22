@@ -4,6 +4,7 @@
 package peersync
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,10 +26,22 @@ func mustEvent() journal.Event {
 }
 
 func dummyNode(id uuid.UUID) peerdiscovery.Node {
+	return keyedNode(id, "192.0.2.10:7946")
+}
+
+// testNoiseKey is a fixed 32-byte public key so loop unit tests exercise the
+// sync path. Signature checking happens in transport, not here.
+var testNoiseKey = bytes.Repeat([]byte{0x07}, 32)
+
+// keyedNode builds an alive peer advertising a Noise static key.
+func keyedNode(id uuid.UUID, addr string) peerdiscovery.Node {
 	return peerdiscovery.Node{
 		ID:      id,
-		Address: mustAddrPort("192.0.2.10:7946"),
+		Address: mustAddrPort(addr),
 		State:   peerdiscovery.NodeStateAlive,
+		Metadata: peerdiscovery.NodeMetadata{
+			NoisePublicKey: testNoiseKey,
+		},
 	}
 }
 
@@ -165,6 +178,26 @@ func TestSyncOneEmptyNextWatermarkDoesNotClear(t *testing.T) {
 	}
 }
 
+// Peers without an advertised Noise key are skipped, never dialed.
+func TestSyncOneSkipsPeerWithoutNoiseKey(t *testing.T) {
+	t.Parallel()
+
+	peerID := uuid.New()
+	member := peerdiscovery.Node{
+		ID:      peerID,
+		Address: mustAddrPort("192.0.2.10:7946"),
+		State:   peerdiscovery.NodeStateAlive,
+	}
+	fake := &fakeSyncer{resp: transport.SyncResponse{NextWatermark: "w"}}
+
+	if syncOne(context.Background(), zap.NewNop(), testPullState(fake, map[uuid.UUID]string{}), member) {
+		t.Fatal("expected skip, got success")
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("calls = %d, want 0 (no dial without key)", len(fake.calls))
+	}
+}
+
 // Failed Sync leaves the cursor so the next attempt retries the same page.
 func TestSyncOneFailureDoesNotAdvanceWatermark(t *testing.T) {
 	t.Parallel()
@@ -206,11 +239,7 @@ func TestPullTickMeetThenPeriodicNoDoubleSync(t *testing.T) {
 
 	self := uuid.New()
 	peerID := uuid.New()
-	peer := peerdiscovery.Node{
-		ID:      peerID,
-		Address: mustAddrPort("198.51.100.1:7946"),
-		State:   peerdiscovery.NodeStateAlive,
-	}
+	peer := keyedNode(peerID, "198.51.100.1:7946")
 	src := &fakeMembers{list: []peerdiscovery.Node{
 		{ID: self, Address: mustAddrPort("127.0.0.1:7946"), State: peerdiscovery.NodeStateAlive},
 		peer,
@@ -262,7 +291,7 @@ func TestPullTickDeadToAliveIsMeet(t *testing.T) {
 		peerID: {ID: peerID, Address: addr, State: peerdiscovery.NodeStateDead},
 	}
 	src := &fakeMembers{list: []peerdiscovery.Node{
-		{ID: peerID, Address: addr, State: peerdiscovery.NodeStateAlive},
+		keyedNode(peerID, "203.0.113.5:7946"),
 	}}
 	fake := &fakeSyncer{resp: transport.SyncResponse{NextWatermark: "back"}}
 	watermarks := map[uuid.UUID]string{peerID: "before-death"}
@@ -302,11 +331,9 @@ func TestPullTickPagingWatermarksAcrossTicks(t *testing.T) {
 
 	self := uuid.New()
 	peerID := uuid.New()
-	src := &fakeMembers{list: []peerdiscovery.Node{{
-		ID:      peerID,
-		Address: mustAddrPort("192.0.2.1:7946"),
-		State:   peerdiscovery.NodeStateAlive,
-	}}}
+	src := &fakeMembers{list: []peerdiscovery.Node{
+		keyedNode(peerID, "192.0.2.1:7946"),
+	}}
 	fake := &fakeSyncer{responses: []transport.SyncResponse{
 		{NextWatermark: "page1"},
 		{NextWatermark: "page2"},
@@ -342,8 +369,8 @@ func TestPullTickPerPeerWatermarksIndependent(t *testing.T) {
 	a := uuid.New()
 	b := uuid.New()
 	src := &fakeMembers{list: []peerdiscovery.Node{
-		{ID: a, Address: mustAddrPort("10.0.0.1:7946"), State: peerdiscovery.NodeStateAlive},
-		{ID: b, Address: mustAddrPort("10.0.0.2:7946"), State: peerdiscovery.NodeStateAlive},
+		keyedNode(a, "10.0.0.1:7946"),
+		keyedNode(b, "10.0.0.2:7946"),
 	}}
 	fake := &fakeSyncer{
 		byPeer: map[string]transport.SyncResponse{
@@ -366,11 +393,9 @@ func TestPullTickPeerDownThenUpResumesWatermark(t *testing.T) {
 
 	self := uuid.New()
 	peerID := uuid.New()
-	src := &fakeMembers{list: []peerdiscovery.Node{{
-		ID:      peerID,
-		Address: mustAddrPort("192.0.2.50:7946"),
-		State:   peerdiscovery.NodeStateAlive,
-	}}}
+	src := &fakeMembers{list: []peerdiscovery.Node{
+		keyedNode(peerID, "192.0.2.50:7946"),
+	}}
 	fake := &fakeSyncer{responses: []transport.SyncResponse{
 		{NextWatermark: "got-to-here"},
 	}}
@@ -418,11 +443,9 @@ func TestPullTickProcessRestartResyncsFromEmptyWatermark(t *testing.T) {
 
 	self := uuid.New()
 	peerID := uuid.New()
-	src := &fakeMembers{list: []peerdiscovery.Node{{
-		ID:      peerID,
-		Address: mustAddrPort("192.0.2.60:7946"),
-		State:   peerdiscovery.NodeStateAlive,
-	}}}
+	src := &fakeMembers{list: []peerdiscovery.Node{
+		keyedNode(peerID, "192.0.2.60:7946"),
+	}}
 	fake := &fakeSyncer{resp: transport.SyncResponse{NextWatermark: "progress"}}
 
 	// "Old process" had advanced the cursor.
@@ -454,11 +477,7 @@ func TestSyncOneAppliesEventsBeforeWatermark(t *testing.T) {
 	t.Parallel()
 
 	peerID := uuid.New()
-	member := peerdiscovery.Node{
-		ID:      peerID,
-		Address: mustAddrPort("192.0.2.10:7946"),
-		State:   peerdiscovery.NodeStateAlive,
-	}
+	member := keyedNode(peerID, "192.0.2.10:7946")
 	ev := mustEvent()
 	fake := &fakeSyncer{
 		resp: transport.SyncResponse{
@@ -518,8 +537,9 @@ func TestRunPullLoopStopsOnCancel(t *testing.T) {
 }
 
 type syncCall struct {
-	peer netip.AddrPort
-	req  transport.SyncRequest
+	peer   netip.AddrPort
+	expect transport.Peer
+	req    transport.SyncRequest
 }
 
 // fakeSyncer records Sync calls and returns scripted responses.
@@ -532,10 +552,10 @@ type fakeSyncer struct {
 	mu        sync.Mutex
 }
 
-func (f *fakeSyncer) Sync(_ context.Context, peer netip.AddrPort, req transport.SyncRequest) (transport.SyncResponse, error) {
+func (f *fakeSyncer) Sync(_ context.Context, peer netip.AddrPort, expect transport.Peer, req transport.SyncRequest) (transport.SyncResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, syncCall{peer: peer, req: req})
+	f.calls = append(f.calls, syncCall{peer: peer, expect: expect, req: req})
 	if f.err != nil {
 		return transport.SyncResponse{}, f.err
 	}

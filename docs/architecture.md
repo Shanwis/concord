@@ -57,7 +57,7 @@ Reconciler Loop
                │
                ├──► Bridge & veth (concord0)
                │
-               └──► Health Checker (/health)
+               └──► Health Check (/health)
 ```
 
 ### 3. Peer Discovery & WireGuard Mesh Flow
@@ -86,7 +86,7 @@ Node Discovery
 [ Remote Node B ]
 Transport Server & Registry
        │
-       │ (8) mTLS Pull Events
+       │ (8) Noise Pull Events
        │ (10) P2P Image/Blob Sync
        │ (Over WireGuard Mesh)
        ▼
@@ -117,7 +117,7 @@ Peer Sync Loop (internal/peersync)
 
 Concord uses two disjoint IPv4 spaces.
 
-**Underlay** is the host NIC. Memberlist, mDNS, and the HTTPS
+**Underlay** is the host NIC. Memberlist, mDNS, and the Noise
 transport use it. Join targets are underlay addresses. Peers
 dial whatever `ResolveAdvertise` published, never `cn0`.
 
@@ -128,7 +128,7 @@ must not advertise `cn0`, `wg-*`, or any `10.0.0.0/16`
 address. Joining an overlay IP on a node that also has
 `cn0` is a local TCP connect, not a peer.
 
-Simulators (including Resonance) attach a tun as the
+Resonance simulator attaches a tun as the
 underlay NIC. That tun must not use `10.0.0.0/16`. Use a
 disjoint prefix such as `192.168.100.0/24`, one address per
 node. Overlay stays `10.0.0.0/16` inside each netns. If the
@@ -148,6 +148,8 @@ In each connected segment, the node with the lowest UUID string is the leader. I
 
 Concord sidesteps most conflicts by construction: every `workload run` mints a fresh unique ID, so concurrent submissions never disagree about the same key. Merge of distinct IDs is a union.
 
+That union is a CvRDT (convergent replicated data type): the journal is a grow-only set of immutable events, merge is set union, and union is associative, commutative, and idempotent. Sync applies unknown IDs and skips known ones, so every segment converges to the same event set regardless of partition history or arrival order. Views are deterministic projections of that set: tombstone dominance, byte-larger live specs, and highest-generation pins all resolve without clocks.
+
 The sidestep leaks in one place. Nodes re-record the spec (scheduler claiming writes its own `workload.spec` copy per ID), so one workload ID can end up with several distinct spec events from different authors. These are conflicting same-ID writes, and the view must resolve them deterministically.
 
 Landed rules in `internal/journalview/workloads.go` (`putEvent`):
@@ -156,5 +158,3 @@ Landed rules in `internal/journalview/workloads.go` (`putEvent`):
 * Live-live tiebreak. Two live specs for one ID resolve by deterministic comparison: the byte-larger serialization wins, regardless of arrival order.
 
 Both rules are order-independent: every node converges to the same stored copy no matter the sync arrival sequence. No wall-clock or logical timestamp participates in these paths.
-
-Separate proposal, not this change: stop reusing `workload.spec` for scheduler claims and give assignment its own event type referencing the spec ID. That would remove duplicate spec copies at the root, leaving one spec plus an optional tombstone per ID. It is a larger redesign tracked on its own.

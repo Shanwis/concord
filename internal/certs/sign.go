@@ -22,8 +22,9 @@ const (
 	// message.
 	nodeKeyDomain = "concord-noise-static-key:"
 
-	// generationBytes is the encoded width of a key generation counter.
-	generationBytes = 8
+	// generationWidth is the byte width of the encoded rotation counter: one
+	// big-endian uint64, matching binary.BigEndian.AppendUint64 below.
+	generationWidth = 8
 )
 
 // buildNodeKeyBinding assembles the binding the fleet CA stamps: domain
@@ -37,9 +38,9 @@ const (
 // VerifyNodeKey share this builder so the two sides cannot drift apart.
 func buildNodeKeyBinding(nodeID uuid.UUID, generation uint64, pub []byte) []byte {
 	// One allocation of exactly the final size: prefix plus node ID plus
-	// generation plus public key. generationBytes matches what AppendUint64
+	// generation plus public key. generationWidth matches what AppendUint64
 	// writes below, so the appends never reallocate.
-	msg := make([]byte, 0, len(nodeKeyDomain)+len(nodeID)+generationBytes+len(pub))
+	msg := make([]byte, 0, len(nodeKeyDomain)+len(nodeID)+generationWidth+len(pub))
 	msg = append(msg, nodeKeyDomain...)
 	msg = append(msg, nodeID[:]...)
 	// Big-endian by convention. Sign and verify must use the same order, which

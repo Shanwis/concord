@@ -17,7 +17,7 @@ import (
 )
 
 // PeerSync pulls journal state from a peer over the node transport.
-// The concrete client lives in transport.Client (HTTPS/2 mTLS unary).
+// The concrete client lives in transport.Client (Noise IK unary).
 type PeerSync interface {
-	Sync(ctx context.Context, peer netip.AddrPort, req transport.SyncRequest) (transport.SyncResponse, error)
+	Sync(ctx context.Context, peer netip.AddrPort, expect transport.Peer, req transport.SyncRequest) (transport.SyncResponse, error)
 }

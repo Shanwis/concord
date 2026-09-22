@@ -108,11 +108,16 @@ func (w *MemberlistLogWriter) Write(p []byte) (int, error) {
 // returned a non-Concord host; soft-fail avoids taking the
 // whole process down. Callers
 // can retry Join later.
+//
+// identity is this node's Noise identity for gossip. An empty identity (nil
+// Pub) advertises no Noise key; peers then cannot open Noise sessions to this
+// node until it restarts with an identity.
 func Start(
 	logger *zap.Logger,
 	node Node,
 	join []netip.AddrPort,
 	advertise netip.Addr,
+	identity NoiseIdentity,
 ) (*MemberService, error) {
 	config := memberlist.DefaultLocalConfig()
 	config.Name = node.ID.String()
@@ -173,6 +178,8 @@ func Start(
 			Workloads: int(
 				delegate.workloads.Load(),
 			),
+			NoisePublicKey:  identity.Pub,
+			NoiseGeneration: identity.Generation,
 		}
 	}
 

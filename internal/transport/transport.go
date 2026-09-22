@@ -5,6 +5,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,46 +14,48 @@ import (
 	"go.uber.org/zap"
 )
 
-// Port is the HTTPS node-to-node transport listen port.
+// Port is the node-to-node transport listen port.
 var Port = "8443"
 
-func InitTransport(caFile, certFile, keyFile string) (*http.Server, error) {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("POST "+SyncPath, postSync)
-
-	tlsConfig, err := loadTLSConfig(caFile, certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("load tls config: %w", err)
-	}
-
-	srv := &http.Server{
-		Addr: ":" + Port,
-		// middleware.
-		Handler:           chain(mux, requireHTTP2),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		TLSConfig:         tlsConfig,
-	}
-
-	return srv, nil
-}
-
-func Start(ctx context.Context, logger *zap.Logger, caFile, certFile, keyFile string) error {
+// Start serves the sync API over Noise on Port. Every accepted TCP connection
+// runs the IK responder handshake first; connections presenting an unsigned or
+// mismatched key are closed before serving. verify admits members and enforces
+// pinning; see KeyPinner in runtime. Sync logic itself lives in sync.go and is
+// unchanged by the framing.
+func Start(
+	ctx context.Context,
+	logger *zap.Logger,
+	static StaticKey,
+	parcel []byte,
+	verify Verifier,
+) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("context cancelled: %w", err)
 	}
 
-	httpServer, err := InitTransport(caFile, certFile, keyFile)
-	if err != nil {
-		return err
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST "+SyncPath, postSync)
+
+	srv := &http.Server{
+		Addr:              ":" + Port,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
 	}
 
 	var lc net.ListenConfig
-	listener, err := lc.Listen(ctx, "tcp", httpServer.Addr)
+	raw, err := lc.Listen(ctx, "tcp", srv.Addr)
 	if err != nil {
 		return fmt.Errorf("net listen failed: %w", err)
+	}
+
+	listener := &noiseListener{
+		Listener: raw,
+		static:   static,
+		parcel:   parcel,
+		verify:   verify,
+		logger:   logger,
 	}
 
 	// Stop when runtime shuts down. WithoutCancel keeps a live parent after ctx ends
@@ -61,17 +64,81 @@ func Start(ctx context.Context, logger *zap.Logger, caFile, certFile, keyFile st
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		if err := srv.Shutdown(shutdownCtx); err != nil {
 			logger.Error("transport shutdown", zap.Error(err))
 		}
 	}()
 
-	// Serve in background. ServeTLS blocks until shutdown.
+	// Serve in background. Serve blocks until shutdown closes the listener.
 	go func() {
-		if err := httpServer.ServeTLS(listener, certFile, keyFile); err != nil && err != http.ErrServerClosed {
-			logger.Error("serve tls", zap.Error(err))
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+			logger.Error("serve noise", zap.Error(err))
 		}
 	}()
 
 	return nil
+}
+
+// handshakeError is a temporary Accept error carrying a failed Noise
+// handshake. Temporary tells http.Serve to back off and keep serving instead
+// of exiting, which is what a handshake failure must do.
+type handshakeError struct {
+	err error
+}
+
+// Error reports the handshake failure.
+func (e *handshakeError) Error() string {
+	return e.err.Error()
+}
+
+// Timeout reports no timeout: the failure is authentication, not time.
+func (e *handshakeError) Timeout() bool {
+	return false
+}
+
+// Temporary keeps http.Serve alive across handshake failures.
+func (e *handshakeError) Temporary() bool {
+	return true
+}
+
+// noiseListener wraps accepted TCP connections in the Noise responder
+// handshake. Handshake failures close the connection and surface as temporary
+// Accept errors, which makes http.Serve back off instead of exiting.
+type noiseListener struct {
+	net.Listener
+	static StaticKey
+	parcel []byte
+	verify Verifier
+	logger *zap.Logger
+}
+
+// Accept accepts one TCP connection and runs the Noise responder handshake.
+func (l *noiseListener) Accept() (net.Conn, error) {
+	raw, err := l.Listener.Accept()
+	if err != nil {
+		// Unwrapped on purpose: http.Serve detects backoff behavior through
+		// a direct net.Error assertion, which wrapping would break.
+		return nil, err //nolint:wrapcheck // see above
+	}
+
+	err = raw.SetDeadline(time.Now().Add(handshakeTimeout))
+	if err != nil {
+		_ = raw.Close() //nolint:errcheck // best-effort close on failed accept
+		return nil, fmt.Errorf("set handshake deadline: %w", err)
+	}
+
+	conn, err := serveHandshake(raw, l.static, l.parcel, l.verify)
+	if err != nil {
+		_ = raw.Close() //nolint:errcheck // best-effort close on failed handshake
+		l.logger.Warn("noise handshake failed", zap.Error(err))
+		return nil, &handshakeError{err: err}
+	}
+
+	err = raw.SetDeadline(time.Time{})
+	if err != nil {
+		_ = raw.Close() //nolint:errcheck // best-effort close on failed accept
+		return nil, fmt.Errorf("clear handshake deadline: %w", err)
+	}
+
+	return conn, nil
 }

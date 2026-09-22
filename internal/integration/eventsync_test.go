@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,7 @@ func TestTwoNodeEventSync(t *testing.T) {
 	idA, idB := uuid.New(), uuid.New()
 
 	provisionNodes(t, idA, idB, dirA, dirB)
+	noiseA, noiseB := provisionNoise(t, idA, idB, dirA, dirB)
 
 	kvA := openKV(t, filepath.Join(dirA, "concord", "bbolt.db"))
 	jA := openJSONL(t, filepath.Join(dirA, "concord", "journal.jsonl"))
@@ -54,7 +56,7 @@ func TestTwoNodeEventSync(t *testing.T) {
 	ctxA, cancelA := context.WithCancel(t.Context())
 	t.Cleanup(cancelA)
 
-	peerA := startMemberlist(t, logger, idA, netip.MustParseAddrPort("127.0.0.1:17946"), nil)
+	peerA := startMemberlist(t, logger, idA, netip.MustParseAddrPort("127.0.0.1:17946"), nil, noiseA.gossipBinding())
 	t.Cleanup(func() { shutDown(t, peerA) })
 
 	origPort := transport.Port
@@ -62,9 +64,11 @@ func TestTwoNodeEventSync(t *testing.T) {
 	t.Cleanup(func() { transport.Port = origPort })
 
 	caPathA := filepath.Join(dirA, "concord", "certs", "ca.crt")
-	certPathA := filepath.Join(dirA, "concord", "certs", "node.crt")
-	keyPathA := filepath.Join(dirA, "concord", "certs", "node.key")
-	if err := transport.Start(ctxA, logger, caPathA, certPathA, keyPathA); err != nil {
+	caCertA, err := transport.LoadCACert(caPathA)
+	if err != nil {
+		t.Fatalf("load ca A: %v", err)
+	}
+	if err := transport.Start(ctxA, logger, noiseA.static, noiseA.parcelBytes(), transport.CAVerifier(caCertA)); err != nil {
 		t.Fatalf("A transport: %v", err)
 	}
 
@@ -77,16 +81,15 @@ func TestTwoNodeEventSync(t *testing.T) {
 	t.Cleanup(cancelB)
 
 	peerB := startMemberlist(t, logger, idB, netip.MustParseAddrPort("127.0.0.1:17947"),
-		[]netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:17946")})
+		[]netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:17946")}, noiseB.gossipBinding())
 	t.Cleanup(func() { shutDown(t, peerB) })
 
 	caPathB := filepath.Join(dirB, "concord", "certs", "ca.crt")
-	certPathB := filepath.Join(dirB, "concord", "certs", "node.crt")
-	keyPathB := filepath.Join(dirB, "concord", "certs", "node.key")
-	clientB, err := transport.NewClient(caPathB, certPathB, keyPathB)
+	caCertB, err := transport.LoadCACert(caPathB)
 	if err != nil {
-		t.Fatalf("B client: %v", err)
+		t.Fatalf("load ca B: %v", err)
 	}
+	clientB := transport.NewClient(noiseB.static, noiseB.parcelBytes(), transport.CAVerifier(caCertB))
 
 	go peersync.RunPullLoop(ctxB, logger, idB, peerB, clientB, jB, viewsB, eventsByIDB)
 
@@ -105,6 +108,20 @@ func TestTwoNodeEventSync(t *testing.T) {
 		t.Fatalf("event type = %s, want sync.test", got.Type)
 	}
 	t.Log("event sync test PASSED: event synced from A to B via pull loop")
+
+	// Large page: 8 KiB exceeds HTTP transport read buffers, so the body must
+	// stream from the still-open Noise session. It stays below the journal
+	// line limit.
+	bigEvent := journal.NewEvent(idA, "sync.test.big", json.RawMessage(`{"data":"`+strings.Repeat("x", 8<<10)+`"}`))
+	if err := journalview.RecordEvent(ctxA, jA, viewsA, bigEvent); err != nil {
+		t.Fatalf("record big event: %v", err)
+	}
+
+	gotBig := waitForEvent(t, eventsByIDB, bigEvent.ID, 20*time.Second)
+	if len(gotBig.Payload) != len(bigEvent.Payload) {
+		t.Fatalf("big payload = %d bytes, want %d", len(gotBig.Payload), len(bigEvent.Payload))
+	}
+	t.Log("event sync test PASSED: 8 KiB event synced from A to B via pull loop")
 }
 
 func provisionNodes(t *testing.T, idA, idB uuid.UUID, dirA, dirB string) {
@@ -133,6 +150,62 @@ func provisionNodes(t *testing.T, idA, idB uuid.UUID, dirA, dirB string) {
 	if _, err := certs.Ensure(idB, netip.Addr{}); err != nil {
 		t.Fatalf("ensure node B certs: %v", err)
 	}
+}
+
+// nodeNoise bundles one test node's Noise identity: static keypair plus the
+// CA-signed identity it gossips.
+type nodeNoise struct {
+	id     uuid.UUID
+	static transport.StaticKey
+	sig    []byte
+	gen    uint64
+}
+
+// gossipBinding converts to the peerdiscovery gossip shape: public key plus
+// generation only. The CA signature travels inside the Noise session.
+func (n nodeNoise) gossipBinding() peerdiscovery.NoiseIdentity {
+	return peerdiscovery.NoiseIdentity{
+		Pub:        n.static.Public,
+		Signature:  n.sig,
+		Generation: n.gen,
+	}
+}
+
+// parcelBytes encodes this node's session parcel.
+func (n nodeNoise) parcelBytes() []byte {
+	return transport.EncodeParcel(n.id, n.gen, n.sig)
+}
+
+// provisionNoise generates per-node Noise keys and CA-signed generation-0
+// parcels under each node's own XDG dir. Must run after provisionNodes so the
+// CA exists in both dirs.
+func provisionNoise(t *testing.T, idA, idB uuid.UUID, dirA, dirB string) (nodeNoise, nodeNoise) {
+	t.Helper()
+
+	t.Setenv("XDG_CONFIG_HOME", dirA)
+	staticA, err := transport.EnsureStaticKey()
+	if err != nil {
+		t.Fatalf("ensure noise key A: %v", err)
+	}
+	sigA, err := certs.SignNodeKey(idA, 0, staticA.Public)
+	if err != nil {
+		t.Fatalf("sign noise key A: %v", err)
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", dirB)
+	staticB, err := transport.EnsureStaticKey()
+	if err != nil {
+		t.Fatalf("ensure noise key B: %v", err)
+	}
+	sigB, err := certs.SignNodeKey(idB, 0, staticB.Public)
+	if err != nil {
+		t.Fatalf("sign noise key B: %v", err)
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", dirA)
+
+	return nodeNoise{id: idA, static: staticA, sig: sigA},
+		nodeNoise{id: idB, static: staticB, sig: sigB}
 }
 
 func copyFile(t *testing.T, src, dst string) {
@@ -191,10 +264,10 @@ func initViews(t *testing.T, kv *kvstore.KVStore, journalPath string) (*journalv
 // nodes, mirroring one operator-provisioned key per test cluster.
 var testGossipKeyValue = []byte("0123456789abcdef0123456789abcdef")
 
-func startMemberlist(t *testing.T, logger *zap.Logger, id uuid.UUID, bind netip.AddrPort, join []netip.AddrPort) *peerdiscovery.MemberService {
+func startMemberlist(t *testing.T, logger *zap.Logger, id uuid.UUID, bind netip.AddrPort, join []netip.AddrPort, identity peerdiscovery.NoiseIdentity) *peerdiscovery.MemberService {
 	t.Helper()
 	provisionGossipKey(t)
-	ms, err := peerdiscovery.Start(logger, peerdiscovery.Node{ID: id, Address: bind}, join, netip.Addr{})
+	ms, err := peerdiscovery.Start(logger, peerdiscovery.Node{ID: id, Address: bind}, join, netip.Addr{}, identity)
 	if err != nil {
 		t.Fatalf("memberlist start: %v", err)
 	}

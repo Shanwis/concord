@@ -77,3 +77,57 @@ func TestEnsureStaticKeyRejectsWrongLength(t *testing.T) {
 		t.Fatalf("expected bad key file to be preserved")
 	}
 }
+
+func TestEnsureGenerationCounterInitializesAndReloads(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	gen, err := EnsureGenerationCounter()
+	if err != nil {
+		t.Fatalf("unexpected error initializing generation: %v", err)
+	}
+	if gen != 0 {
+		t.Fatalf("initial generation = %d, want 0", gen)
+	}
+
+	// Reload returns the persisted value.
+	gen, err = EnsureGenerationCounter()
+	if err != nil {
+		t.Fatalf("unexpected error reloading generation: %v", err)
+	}
+	if gen != 0 {
+		t.Fatalf("reloaded generation = %d, want 0", gen)
+	}
+
+	// File holds one big-endian uint64 with mode 0600.
+	genPath := filepath.Join(tmpDir, "concord", "noise", "generation")
+	info, err := os.Stat(genPath)
+	if err != nil {
+		t.Fatalf("stat generation file: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("expected 0600 file mode, got %o", info.Mode().Perm())
+	}
+}
+
+func TestEnsureGenerationCounterRejectsWrongLength(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	genPath := filepath.Join(tmpDir, "concord", "noise", "generation")
+
+	err := os.MkdirAll(filepath.Dir(genPath), 0o700)
+	if err != nil {
+		t.Fatalf("create noise dir: %v", err)
+	}
+
+	err = os.WriteFile(genPath, []byte("bad"), 0o600)
+	if err != nil {
+		t.Fatalf("write bad generation: %v", err)
+	}
+
+	_, err = EnsureGenerationCounter()
+	if err == nil {
+		t.Fatalf("expected error for wrong-length generation file")
+	}
+}

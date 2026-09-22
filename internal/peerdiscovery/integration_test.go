@@ -88,7 +88,7 @@ func startNode(t *testing.T, join []netip.AddrPort) (*peerdiscovery.MemberServic
 	svc, err := peerdiscovery.Start(zap.NewNop(), peerdiscovery.Node{
 		ID:      uuid.New(),
 		Address: netip.MustParseAddrPort("127.0.0.1:0"),
-	}, join, netip.Addr{})
+	}, join, netip.Addr{}, peerdiscovery.NoiseIdentity{})
 	if err != nil {
 		t.Fatalf("start node: %v", err)
 	}
