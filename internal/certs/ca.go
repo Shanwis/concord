@@ -71,10 +71,29 @@ func loadCA(paths Paths) (*x509.Certificate, *rsa.PrivateKey, error) {
 	if keyBlock == nil {
 		return nil, nil, fmt.Errorf("decode ca key: no PEM in %s", paths.CAKey)
 	}
-	caKey, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse ca key: %w", err)
+	var caKey *rsa.PrivateKey
+
+	switch keyBlock.Type {
+	case "RSA PRIVATE KEY": 
+		caKey, err = x509.ParsePKCS1PrivateKey(keyBlock.Bytes) 
+		if err != nil { 
+			return nil, nil, fmt.Errorf("parse PKCS#1 ca key: %w", err) 
+		}
+	case "PRIVATE KEY":
+		keyAny, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes) 
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse PKCS#8 ca key: %w", err) 
+		}
+		
+		var ok bool
+		caKey, ok = keyAny.(*rsa.PrivateKey)
+		if !ok {
+			return nil, nil, fmt.Errorf("parse ca key: PKCS#8 key is not an RSA private key")
+		}
+	default :
+		return nil, nil, fmt.Errorf( "decode ca key: unsupported PEM type %q in %s", keyBlock.Type, paths.CAKey,)
 	}
+
 	return caCert, caKey, nil
 }
 
