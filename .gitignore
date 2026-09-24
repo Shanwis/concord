@@ -18,8 +18,5 @@ coverage.out
 # Binary
 concord
 
-# Local git hooks
-.githooks
-
 # History folder
 .history/

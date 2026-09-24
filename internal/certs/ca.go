@@ -48,53 +48,87 @@ func WriteCA() error {
 
 // loadCA reads operator-provided ca.crt and ca.key from paths.
 func loadCA(paths Paths) (*x509.Certificate, *rsa.PrivateKey, error) {
-	// #nosec G304: paths come from DefaultPaths (local config dir).
-	caPEM, err := os.ReadFile(paths.CA)
+	caCert, err := loadCACert(paths.CA)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read ca cert: %w", err)
-	}
-	block, _ := pem.Decode(caPEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, nil, fmt.Errorf("decode ca cert: no CERTIFICATE PEM in %s", paths.CA)
-	}
-	caCert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse ca cert: %w", err)
+		return nil, nil, err
 	}
 
-	// #nosec G304: paths come from DefaultPaths (local config dir).
-	keyPEM, err := os.ReadFile(paths.CAKey)
+	caKey, err := loadCAKey(paths.CAKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read ca key: %w", err)
-	}
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil {
-		return nil, nil, fmt.Errorf("decode ca key: no PEM in %s", paths.CAKey)
-	}
-	var caKey *rsa.PrivateKey
-
-	switch keyBlock.Type {
-	case "RSA PRIVATE KEY": 
-		caKey, err = x509.ParsePKCS1PrivateKey(keyBlock.Bytes) 
-		if err != nil { 
-			return nil, nil, fmt.Errorf("parse PKCS#1 ca key: %w", err) 
-		}
-	case "PRIVATE KEY":
-		keyAny, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes) 
-		if err != nil {
-			return nil, nil, fmt.Errorf("parse PKCS#8 ca key: %w", err) 
-		}
-		
-		var ok bool
-		caKey, ok = keyAny.(*rsa.PrivateKey)
-		if !ok {
-			return nil, nil, fmt.Errorf("parse ca key: PKCS#8 key is not an RSA private key")
-		}
-	default :
-		return nil, nil, fmt.Errorf( "decode ca key: unsupported PEM type %q in %s", keyBlock.Type, paths.CAKey,)
+		return nil, nil, err
 	}
 
 	return caCert, caKey, nil
+}
+
+// loadCACert reads and parses the CA certificate at path.
+func loadCACert(path string) (*x509.Certificate, error) {
+	// #nosec G304: paths come from DefaultPaths (local config dir).
+	caPEM, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read ca cert: %w", err)
+	}
+	block, _ := pem.Decode(caPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("decode ca cert: no CERTIFICATE PEM in %s", path)
+	}
+	caCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse ca cert: %w", err)
+	}
+	return caCert, nil
+}
+
+// loadCAKey reads and parses the CA private key at path.
+func loadCAKey(path string) (*rsa.PrivateKey, error) {
+	// #nosec G304: paths come from DefaultPaths (local config dir).
+	keyPEM, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read ca key: %w", err)
+	}
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil {
+		return nil, fmt.Errorf("decode ca key: no PEM in %s", path)
+	}
+	caKey, err := parseCAKey(keyBlock, path)
+	if err != nil {
+		return nil, err
+	}
+	return caKey, nil
+}
+
+// parseCAKey parses a decoded CA key block in PKCS1 or PKCS8.
+func parseCAKey(block *pem.Block, path string) (*rsa.PrivateKey, error) {
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		return parsePKCS1RSAKey(block.Bytes)
+	case "PRIVATE KEY":
+		return parsePKCS8RSAKey(block.Bytes)
+	default:
+		return nil, fmt.Errorf("decode ca key: unsupported PEM type %q in %s", block.Type, path)
+	}
+}
+
+// parsePKCS1RSAKey parses DER as PKCS1 RSA.
+func parsePKCS1RSAKey(der []byte) (*rsa.PrivateKey, error) {
+	caKey, err := x509.ParsePKCS1PrivateKey(der)
+	if err != nil {
+		return nil, fmt.Errorf("parse PKCS#1 ca key: %w", err)
+	}
+	return caKey, nil
+}
+
+// parsePKCS8RSAKey parses DER as PKCS8 and requires RSA.
+func parsePKCS8RSAKey(der []byte) (*rsa.PrivateKey, error) {
+	keyAny, err := x509.ParsePKCS8PrivateKey(der)
+	if err != nil {
+		return nil, fmt.Errorf("parse PKCS#8 ca key: %w", err)
+	}
+	caKey, ok := keyAny.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("parse ca key: PKCS#8 key is not an RSA private key") //nolint:perfsprint // plain sentinel, no wrap target
+	}
+	return caKey, nil
 }
 
 // createCA generates an RSA key and a self-signed CA certificate.
