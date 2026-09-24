@@ -4,6 +4,7 @@
 package transport
 
 import (
+	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/binary"
@@ -157,4 +158,46 @@ func generateStaticKey(path string) (StaticKey, error) {
 	}
 
 	return StaticKey{Private: private, Public: key.PublicKey().Bytes()}, nil
+}
+
+func RotateKey(ctx context.Context) (uint64, error) {
+	if ctx.Err() != nil {
+		return 0, fmt.Errorf("context cancellation: %w", ctx.Err())
+	}
+
+	generationCounter, err := EnsureGenerationCounter()
+	if err != nil {
+		return 0, err
+	}
+
+	pathNoiseKey, err := noiseKeyPath()
+	if err != nil {
+		return 0, err
+	}
+
+	// Delete the old static noise key
+	err = os.Remove(pathNoiseKey)
+	if err != nil {
+		return 0, fmt.Errorf("os remove: %w", err)
+	}
+
+	// Increment the generation counter file
+	pathNoiseGeneration, err := noiseGenerationPath()
+	if err != nil {
+		return 0, err
+	}
+
+	// Increment it by 1
+	generationCounter++
+
+	// Save the generation counter to its file
+	var outputBytes [generationWidth]byte
+	binary.BigEndian.PutUint64(outputBytes[:], generationCounter)
+	err = os.WriteFile(pathNoiseGeneration,
+		outputBytes[:], 0o600)
+	if err != nil {
+		return 0, fmt.Errorf("os write file: %w", err)
+	}
+
+	return 0, nil
 }
