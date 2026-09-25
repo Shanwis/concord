@@ -81,8 +81,9 @@ func newNodeRotateKeyCommand() *cobra.Command {
 }
 
 // handleNodeRotateKey deletes the static key and bumps the generation
-// counter. Local file ops only, no daemon involved: the new identity takes
-// effect on daemon restart.
+// counter. Local file ops on this node only, no daemon involved: it works
+// with the daemon stopped, and the new identity takes effect on daemon
+// restart.
 func handleNodeRotateKey(ctx context.Context, stdout io.Writer) error {
 	generation, err := transport.RotateKey(ctx)
 	if err != nil {
