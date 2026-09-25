@@ -229,3 +229,28 @@ func TestCLIValidationErrors(t *testing.T) {
 		t.Fatalf("expected error inspecting nonexistent workload")
 	}
 }
+
+func TestCLINodeRotateKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	ctx := context.Background()
+
+	var stdout, stderr bytes.Buffer
+	err := cli.Execute(ctx, []string{"node", "rotate-key"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("node rotate-key failed: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "generation 1") {
+		t.Fatalf("expected generation 1 in output, got:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	err = cli.Execute(ctx, []string{"node", "rotate-key"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("second node rotate-key failed: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "generation 2") {
+		t.Fatalf("expected generation 2 in output, got:\n%s", stdout.String())
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 )
@@ -160,6 +161,13 @@ func generateStaticKey(path string) (StaticKey, error) {
 	return StaticKey{Private: private, Public: key.PublicKey().Bytes()}, nil
 }
 
+// RotateKey deletes the static key and bumps the generation counter, returning
+// the new generation. The new identity takes effect on daemon restart, not
+// here: swapping the live key would mean mutex-guarded state across the
+// listener, the client, and gossip while sessions are mid-handshake, plus
+// races between in-flight verifies and the new generation. Rotation is rare
+// and intentional, restarts take seconds, and the mesh re-converges through
+// existing discovery with pins intact. Hot swap buys nothing for that price.
 func RotateKey(ctx context.Context) (uint64, error) {
 	if ctx.Err() != nil {
 		return 0, fmt.Errorf("context cancellation: %w", ctx.Err())
@@ -177,7 +185,7 @@ func RotateKey(ctx context.Context) (uint64, error) {
 
 	// Delete the old static noise key
 	err = os.Remove(pathNoiseKey)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return 0, fmt.Errorf("os remove: %w", err)
 	}
 
@@ -187,7 +195,10 @@ func RotateKey(ctx context.Context) (uint64, error) {
 		return 0, err
 	}
 
-	// Increment it by 1
+	// Increment it by 1 and check for overflow
+	if generationCounter == math.MaxUint64 {
+		return generationCounter, fmt.Errorf("counter overflow: reached max uint64 limit") //nolint:perfsprint // plain sentinel, no wrap target
+	}
 	generationCounter++
 
 	// Save the generation counter to its file
@@ -199,5 +210,8 @@ func RotateKey(ctx context.Context) (uint64, error) {
 		return 0, fmt.Errorf("os write file: %w", err)
 	}
 
-	return 0, nil
+	// Now all that needs to happen is a restart of concord, and the key
+	// will get regenerated.
+
+	return generationCounter, nil
 }

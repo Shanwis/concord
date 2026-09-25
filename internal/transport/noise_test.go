@@ -5,6 +5,7 @@ package transport
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -129,5 +130,65 @@ func TestEnsureGenerationCounterRejectsWrongLength(t *testing.T) {
 	_, err = EnsureGenerationCounter()
 	if err == nil {
 		t.Fatalf("expected error for wrong-length generation file")
+	}
+}
+
+func TestRotateKeyBumpsGenerationAndDeletesKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	if _, err := EnsureStaticKey(); err != nil {
+		t.Fatalf("ensure static key: %v", err)
+	}
+
+	gen, err := RotateKey(context.Background())
+	if err != nil {
+		t.Fatalf("rotate key: %v", err)
+	}
+	if gen != 1 {
+		t.Fatalf("generation = %d, want 1", gen)
+	}
+
+	// The key file is gone; the counter persisted.
+	if _, err := os.Stat(filepath.Join(tmpDir, "concord", "noise", "secret.key")); !os.IsNotExist(err) {
+		t.Fatalf("expected key file to be deleted, stat err = %v", err)
+	}
+	stored, err := EnsureGenerationCounter()
+	if err != nil {
+		t.Fatalf("read generation: %v", err)
+	}
+	if stored != 1 {
+		t.Fatalf("stored generation = %d, want 1", stored)
+	}
+
+	// Rotating again bumps to 2 even with no key present.
+	gen, err = RotateKey(context.Background())
+	if err != nil {
+		t.Fatalf("second rotate: %v", err)
+	}
+	if gen != 2 {
+		t.Fatalf("generation = %d, want 2", gen)
+	}
+}
+
+func TestRotateKeyRefusesExhaustedCounter(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	genPath := filepath.Join(tmpDir, "concord", "noise", "generation")
+
+	err := os.MkdirAll(filepath.Dir(genPath), 0o700)
+	if err != nil {
+		t.Fatalf("create noise dir: %v", err)
+	}
+
+	full := bytes.Repeat([]byte{0xff}, 8)
+	err = os.WriteFile(genPath, full, 0o600)
+	if err != nil {
+		t.Fatalf("write max generation: %v", err)
+	}
+
+	if _, err := RotateKey(context.Background()); err == nil {
+		t.Fatal("rotation at max generation accepted")
 	}
 }

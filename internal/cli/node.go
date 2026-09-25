@@ -9,6 +9,8 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
+
+	"github.com/podomy/concord/internal/transport"
 )
 
 // newNodeCommand creates the 'concord node' command group.
@@ -19,6 +21,7 @@ func newNodeCommand() *cobra.Command {
 	}
 
 	nodeCmd.AddCommand(newNodeListCommand())
+	nodeCmd.AddCommand(newNodeRotateKeyCommand())
 
 	return nodeCmd
 }
@@ -63,5 +66,29 @@ func handleNodeList(ctx context.Context, stdout io.Writer) error {
 		return fmt.Errorf("flush node table: %w", err)
 	}
 
+	return nil
+}
+
+// newNodeRotateKeyCommand creates the 'concord node rotate-key' subcommand.
+func newNodeRotateKeyCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rotate-key",
+		Short: "Rotate this node's Noise static key",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return handleNodeRotateKey(cmd.Context(), cmd.OutOrStdout())
+		},
+	}
+}
+
+// handleNodeRotateKey deletes the static key and bumps the generation
+// counter. Local file ops only, no daemon involved: the new identity takes
+// effect on daemon restart.
+func handleNodeRotateKey(ctx context.Context, stdout io.Writer) error {
+	generation, err := transport.RotateKey(ctx)
+	if err != nil {
+		return fmt.Errorf("rotate noise key: %w", err)
+	}
+
+	_, _ = fmt.Fprintf(stdout, "Rotated Noise key to generation %d. Restart the concord daemon to apply.\n", generation) //nolint:errcheck // CLI output
 	return nil
 }

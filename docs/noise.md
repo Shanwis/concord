@@ -223,9 +223,9 @@ dialed node ID, so cursors cannot be poisoned by a confused peer.
 
 ## Rotation procedure
 
-1. Delete `noise/secret.key`.
-2. Bump `noise/generation` by one.
-3. Restart the node. Boot generates a fresh key, re-signs, gossips the new
+1. Run `concord node rotate-key`. It deletes `noise/secret.key` and bumps
+   `noise/generation` by one.
+2. Restart the node. Boot generates a fresh key, re-signs, gossips the new
    generation, and peers re-pin on first contact.
 
 Recovery from a pin alarm is always a bump: it is an intentional act, and the

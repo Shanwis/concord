@@ -90,7 +90,7 @@ When Concord starts:
 
 Because every binding is signed by the same Root CA, all nodes can mutually verify each other's identity across the mesh. Verification is by CA signature only; there are no certificates and no validity windows, so nodes need no wall-clock agreement.
 
-Key rotation means deleting `secret.key`, bumping `noise/generation`, and restarting so boot generates a fresh key and the new binding is signed and gossiped. The bump is the load-bearing step, a fresh key at the same generation trips the pin alarm instead of splitting the fleet. The highest generation seen for a node wins.
+Key rotation means deleting `secret.key`, bumping `noise/generation`, and restarting so boot generates a fresh key and the new binding is signed and gossiped. `concord node rotate-key` performs the delete and the bump; restart the daemon to apply. The bump is the load-bearing step, a fresh key at the same generation trips the pin alarm instead of splitting the fleet. The highest generation seen for a node wins.
 
 Peers pin the first valid key they see for each node ID. A different key at the same generation is rejected with a warning and the pin sticks, which is how partial state loss (new key, old counter) surfaces instead of silently splitting the fleet. Recover by bumping the generation, an intentional act.
 
