@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/podomy/concord/internal/clock"
@@ -158,4 +159,26 @@ func createCA() (caDER []byte, caCert *x509.Certificate, caKey *rsa.PrivateKey, 
 		return nil, nil, nil, fmt.Errorf("parse ca certificate: %w", err)
 	}
 	return caDER, caCert, caKey, nil
+}
+
+// writePEM writes der as a single PEM block of the given type to path.
+// Files are created or truncated with mode 0600 (owner read/write only).
+func writePEM(path, blockType string, der []byte) (err error) {
+	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			if err != nil {
+				err = fmt.Errorf("close %s: %w; original error: %w", path, closeErr, err)
+				return
+			}
+			err = fmt.Errorf("close %s: %w", path, closeErr)
+		}
+	}()
+	if err = pem.Encode(f, &pem.Block{Type: blockType, Bytes: der}); err != nil {
+		return fmt.Errorf("encode %s: %w", path, err)
+	}
+	return nil
 }

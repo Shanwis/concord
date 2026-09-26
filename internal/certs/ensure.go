@@ -4,48 +4,26 @@
 package certs
 
 import (
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
-	"net/netip"
 	"os"
-
-	"github.com/google/uuid"
 )
 
-// Ensure returns the default TLS material paths for transport.
+// Ensure returns the default CA paths for transport after checking the
+// operator-provisioned CA material exists.
 //
-// Policy:
-//  1. If ca.crt, node.crt, and node.key are present and valid → reuse.
-//  2. Else if ca.crt and ca.key are present → mint node.crt/node.key under that CA.
-//  3. Else → fail (CA must be provisioned: factory, flash drive, etc.).
-//
-// Normal node bootstrap does not create a CA. createCA/WriteCA are not on this
-// path; the operator must already have placed ca.crt and ca.key. WriteCA is
-// only for offline provisioning tools and tests.
-//
-// Reuse does not remint when only advertiseAddress changes.
-func Ensure(nodeID uuid.UUID, advertiseAddress netip.Addr) (Paths, error) {
+// Policy: ca.crt and ca.key must already be on disk (factory, flash drive,
+// etc.). No certificates are minted here; node identity lives in the Noise
+// static key, not in node.crt. Normal node bootstrap never creates a CA:
+// createCA/WriteCA are not on this path. WriteCA is only for offline
+// provisioning tools and tests.
+func Ensure() (Paths, error) {
 	paths, err := DefaultPaths()
 	if err != nil {
 		return Paths{}, err
 	}
 
-	if err := valid(paths); err == nil {
-		return paths, nil
-	}
-
 	if err := requireCA(paths); err != nil {
 		return Paths{}, err
-	}
-
-	if err := MintNode(nodeID, advertiseAddress); err != nil {
-		return Paths{}, fmt.Errorf("mint node: %w", err)
-	}
-
-	if err := valid(paths); err != nil {
-		return Paths{}, fmt.Errorf("after mint node: %w", err)
 	}
 
 	return paths, nil
@@ -61,74 +39,5 @@ func requireCA(paths Paths) error {
 			return fmt.Errorf("stat %s: %w", p, err)
 		}
 	}
-	return nil
-}
-
-// present reports whether ca.crt, node.crt, and node.key exist (runtime trio).
-func present(paths Paths) error {
-	for _, p := range []string{paths.CA, paths.Cert, paths.Key} {
-		if _, err := os.Stat(p); err != nil {
-			if os.IsNotExist(err) {
-				return fmt.Errorf("missing %s", p)
-			}
-			return fmt.Errorf("stat %s: %w", p, err)
-		}
-	}
-	return nil
-}
-
-// valid checks that runtime TLS files form a usable node identity.
-//
-// Requires ca.crt + node.crt + node.key. ca.key is not required to run
-// transport (only to mint new node certs).
-func valid(paths Paths) error {
-	if err := present(paths); err != nil {
-		return err
-	}
-
-	cert, err := tls.LoadX509KeyPair(paths.Cert, paths.Key)
-	if err != nil {
-		return fmt.Errorf("node cert/key: %w", err)
-	}
-	if len(cert.Certificate) == 0 {
-		return fmt.Errorf("node cert empty") //nolint:perfsprint // plain error, no wrap target
-	}
-
-	// #nosec G304: paths come from DefaultPaths (local config dir).
-	caPEM, err := os.ReadFile(paths.CA)
-	if err != nil {
-		return fmt.Errorf("read ca: %w", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return fmt.Errorf("ca: no certificates") //nolint:perfsprint // plain error, no wrap target
-	}
-
-	// Decode caPEM block.
-	block, _ := pem.Decode(caPEM)
-	if block == nil {
-		return fmt.Errorf("ca: no cert block found") //nolint:perfsprint // plain sentinel, no wrap target
-	}
-
-	if block.Type != "CERTIFICATE" {
-		return fmt.Errorf("ca: provided ca is not a certificate") //nolint:perfsprint // plain sentinel, no wrap target
-	}
-
-	// Parse the decoded caPEM into an *x509.Certificate
-	ca, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("parse ca: %w", err)
-	}
-
-	leaf, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		return fmt.Errorf("parse node cert: %w", err)
-	}
-
-	err = VerifyNodeCert(leaf, ca)
-	if err != nil {
-		return err
-	}
-
 	return nil
 }

@@ -1,17 +1,17 @@
 // Copyright (C) 2026 Podomy.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package certs manages on-disk TLS material for Concord nodes.
+// Package certs manages on-disk CA material for Concord nodes.
 //
 // Same UserConfigDir/concord layout as node config, under concord/certs/:
 //
 // ca.crt  - fleet trust anchor (operator-provided; required before start).
-// ca.key  - CA private key (operator-provided; used only to mint node certs).
-// node.crt / node.key - this node's identity (auto-minted under the CA).
+// ca.key  - CA private key (operator-provided; used only to sign node parcels).
 //
+// Node identity lives in the Noise static key under concord/noise/, not here.
 // Normal bootstrap never creates a CA. The operator supplies ca.crt and ca.key
-// (factory, flash drive, etc.). Ensure only mints node material when the CA
-// is already present. WriteCA is for provisioning tools, not the running node.
+// (factory, flash drive, etc.). Ensure only checks their presence. WriteCA is
+// for provisioning tools, not the running node.
 //
 // Dir() and DefaultPaths() expose the directory and fixed file names.
 package certs
@@ -25,21 +25,15 @@ import (
 const (
 	caFileName    = "ca.crt"
 	caKeyFileName = "ca.key"
-	certFileName  = "node.crt"
-	keyFileName   = "node.key"
 )
 
-// Paths holds the on-disk locations for TLS material.
+// Paths holds the on-disk locations for CA material.
 //
 // CA    - PEM CA certificate (trust anchor).
-// CAKey - PEM CA private key (sign node certs; not used by transport).
-// Cert  - this node's PEM certificate.
-// Key   - this node's PEM private key.
+// CAKey - PEM CA private key (signs node parcels; not used by transport).
 type Paths struct {
 	CA    string
 	CAKey string
-	Cert  string
-	Key   string
 }
 
 // Dir returns the auto-determined directory for Concord TLS material
@@ -58,8 +52,8 @@ func Dir() (string, error) {
 	return certsDir, nil
 }
 
-// DefaultPaths returns fixed paths for ca.crt, ca.key, node.crt, and node.key
-// under Dir(). Callers cannot override them.
+// DefaultPaths returns fixed paths for ca.crt and ca.key under Dir().
+// Callers cannot override them.
 func DefaultPaths() (Paths, error) {
 	dir, err := Dir()
 	if err != nil {
@@ -69,7 +63,5 @@ func DefaultPaths() (Paths, error) {
 	return Paths{
 		CA:    filepath.Join(dir, caFileName),
 		CAKey: filepath.Join(dir, caKeyFileName),
-		Cert:  filepath.Join(dir, certFileName),
-		Key:   filepath.Join(dir, keyFileName),
 	}, nil
 }

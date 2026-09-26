@@ -439,10 +439,8 @@ func ensureNodeKeys(nodeConfig node.NodeConfig) (cn.Key, transport.StaticKey, pe
 // prepareNoiseIdentity ensures this node's Noise static key and rotation
 // generation, then signs the identity parcel the node gossips to peers.
 // certs.Ensure runs first so a missing CA fails with the provisioning error.
-// The node certificate it mints is unused by the Noise transport; only the CA
-// presence check matters here.
 func prepareNoiseIdentity(nodeConfig node.NodeConfig) (transport.StaticKey, peerdiscovery.NoiseIdentity, error) {
-	_, err := certs.Ensure(nodeConfig.ID, netip.Addr{})
+	_, err := certs.Ensure()
 	if err != nil {
 		return transport.StaticKey{}, peerdiscovery.NoiseIdentity{}, fmt.Errorf("ensure certs: %w", err)
 	}
