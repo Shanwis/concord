@@ -112,7 +112,7 @@ func (c *Client) exchange(conn *noiseConn, peer netip.AddrPort, httpReq *http.Re
 	}
 	client := &http.Client{Timeout: c.timeout, Transport: transport}
 
-	httpResp, err := client.Do(httpReq)
+	httpResp, err := client.Do(httpReq) //nolint:gosec // DialContext routes into pre-authenticated Noise session
 	if err != nil {
 		return SyncResponse{}, fmt.Errorf("sync %s: %w", peer, err)
 	}
